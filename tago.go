@@ -18,6 +18,7 @@ package main
 import (
 	"go/parser"
 	"go/ast"
+	"go/token"
 	"bufio"
 	"bytes"
 	"flag"
@@ -29,7 +30,7 @@ import (
 func whereAmI() string {
 	var r string = ""
 	if dir, err := os.Getwd(); err != nil {
-		fmt.Printf("Error getting working directory: %s\n", err.String())
+		fmt.Printf("Error getting working directory: %s\n", err)
 	} else {
 		r = dir + "/"
 	}
@@ -47,31 +48,33 @@ type Tea struct {
 
 func (t *Tea) String() string { return t.bag.String() }
 
-func (t *Tea) Write(p []byte) (n int, err os.Error) {
+func (t *Tea) Write(p []byte) (n int, err error) {
 	t.bag.Write(p)
 	return len(p), nil
 }
 
 // Writes a TAGS line to a Tea buffer
-func (t *Tea) drink(leaf *ast.Ident) {
-	s := scoop(leaf.Position.Filename, leaf.Position.Line)
-	fmt.Fprintf(t, "%s%s%d,%d\n", s, leaf.Obj.Name, leaf.Position.Line, leaf.Position.Offset)
+func (t *Tea) drink(fset *token.FileSet, leaf *ast.Ident) {
+	p := leaf.Pos()
+	f := fset.File(p)
+	s := scoop(f.Name(), f.Line(p))
+	fmt.Fprintf(t, "%s%s%d,%d\n", s, leaf.Name, f.Line(p), f.Offset(p))
 }
 
 // TAGS file is either appended or created, not overwritten.
 func (t *Tea) savor() {
 	location := fmt.Sprintf("%s%s", *saveDir, *tagsName)
 	if *appendMode {
-		if file, err := os.Open(location, os.O_APPEND|os.O_WRONLY, 0666); err != nil {
-			fmt.Printf("Error appending file \"%s\": %s\n", location, err.String())
+		if file, err := os.OpenFile(location, os.O_APPEND|os.O_WRONLY, 0666); err != nil {
+			fmt.Printf("Error appending file \"%s\": %s\n", location, err)
 		} else {
 			b := t.bag.Len()
 			file.WriteAt(t.bag.Bytes(), int64(b))
 			file.Close()
 		}
 	} else {
-		if file, err := os.Open(location, os.O_CREATE|os.O_WRONLY, 0666); err != nil {
-			fmt.Printf("Error writing file \"%s\": %s\n", location, err.String())
+		if file, err := os.OpenFile(location, os.O_CREATE|os.O_WRONLY, 0666); err != nil {
+			fmt.Printf("Error writing file \"%s\": %s\n", location, err)
 		} else {
 			file.WriteString(t.bag.String())
 			file.Close()
@@ -83,15 +86,15 @@ func (t *Tea) savor() {
 func scoop(name string, n int) []byte {
 	var newline byte = '\n'
 	var line []byte // holds a line of source code
-	if file, err := os.Open(name, os.O_RDONLY, 0666); err != nil {
-		fmt.Printf("Error opening file: %s\n", err.String())
+	if file, err := os.OpenFile(name, os.O_RDONLY, 0666); err != nil {
+		fmt.Printf("Error opening file: %s\n", err)
 	} else {
 		r := bufio.NewReader(file)
 		
 		// iterate until reaching line #n
 		for i := 1; i <= n; i++ {
 			if sought, err := r.ReadBytes(newline); err != nil {
-				fmt.Printf("Error reading bytes: %s\n", err.String())
+				fmt.Printf("Error reading bytes: %s\n", err)
 			} else {
 				line = sought[0:(len(sought) - 1)] //strip the newline
 			}
@@ -104,32 +107,34 @@ func scoop(name string, n int) []byte {
 // Parses the source files given on the commandline, returns a TAGS chunk for each file
 func brew() string {
 	teaPot := new(Tea)
+	fset := token.NewFileSet()
 	for i := 0; i < len(flag.Args()); i++ {
 		teaCup := new(Tea)
-		if ptree, perr := parser.ParseFile(flag.Arg(i), nil, nil, 0); perr != nil {
-			fmt.Println("Error parsing file: ", perr.String())
+		if ptree, perr := parser.ParseFile(fset, flag.Arg(i), nil, 0); perr != nil {
+			fmt.Println("Error parsing file: ", perr)
 			return ""
 		} else {
 			// if there were no parsing errors then process normally
 			for _, l := range ptree.Decls {
 				switch leaf := l.(type) {
 				case *ast.FuncDecl:
-					teaCup.drink(leaf.Name)
+					teaCup.drink(fset, leaf.Name)
 				case *ast.GenDecl:
 					for _, c := range leaf.Specs {
 						switch cell := c.(type) {
 						case *ast.TypeSpec:
-							teaCup.drink(cell.Name)
+							teaCup.drink(fset, cell.Name)
 						case *ast.ValueSpec:
 							for _, atom := range cell.Names {
-								teaCup.drink(atom)
+								teaCup.drink(fset, atom)
 							}
 						}
 					}
 				}
 			}
 			totalBytes := teaCup.bag.Len()
-			fmt.Fprintf(teaPot, "\f\n%s,%d\n%s", ptree.Position.Filename, totalBytes, teaCup)
+
+			fmt.Fprintf(teaPot, "\f\n%s,%d\n%s", flag.Arg(i), totalBytes, teaCup)
 		}
 	}
 	return teaPot.String()
